@@ -329,3 +329,29 @@ export function snapData(img) {
   }
   return { lines, corners };
 }
+
+// Unisce il risultato dell'intelligenza artificiale (robusto: trova la pagina giusta)
+// con quello geometrico (preciso al pixel sui bordi). mlCorners in pixel dell'immagine, o null.
+export function fuse(img, mlCorners) {
+  const classic = detectQuad(img);
+  if (!mlCorners) return classic ? classic.corners : null;
+  const diag = Math.hypot(img.width, img.height);
+  const ml = orderCorners(mlCorners.map(p => p.slice()));
+  if (classic) {
+    const d = Math.max(...classic.corners.map((p, i) => Math.hypot(p[0] - ml[i][0], p[1] - ml[i][1])));
+    if (d < diag * 0.07) return classic.corners; // concordano: il geometrico è più preciso
+  }
+  // non concordano: vale la pagina trovata dall'IA, con i lati agganciati ai bordi veri vicini
+  const A = analyze(img);
+  const q = ml.map(([x, y]) => [x / A.sx, y / A.sy]);
+  const lines = [...A.lines, { theta: 0, rho: 0.5 }, { theta: 0, rho: A.w - 1.5 }, { theta: Math.PI / 2, rho: 0.5 }, { theta: Math.PI / 2, rho: A.h - 1.5 }];
+  const sideLines = [];
+  for (let i = 0; i < 4; i++) {
+    const P = q[i], Q = q[(i + 1) % 4];
+    sideLines.push(bestLineNear(lines, P, Q, Math.min(A.w, A.h) * 0.045, 8 * DEG) || lineThrough(P, Q));
+  }
+  let out = [];
+  for (let i = 0; i < 4; i++) out.push(intersect(sideLines[(i + 3) % 4], sideLines[i]) || q[i]);
+  if (!convexOK(out, A.w, A.h) || out.some((p, i) => Math.hypot(p[0] - q[i][0], p[1] - q[i][1]) > Math.min(A.w, A.h) * 0.08)) out = q;
+  return orderCorners(out.map(([x, y]) => [Math.max(0, Math.min(img.width, x * A.sx)), Math.max(0, Math.min(img.height, y * A.sy))]));
+}

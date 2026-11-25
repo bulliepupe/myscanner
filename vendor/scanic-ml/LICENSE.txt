@@ -1,0 +1,2 @@
+scanic-ml — MIT License (vedi https://www.npmjs.com/package/scanic-ml)
+Modello DocCornerNet (MIT) di mapo80; ONNX Runtime (MIT) di Microsoft.

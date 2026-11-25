@@ -5,6 +5,7 @@ Web app installabile per scansionare documenti con la fotocamera del telefono. T
 ## Funzioni
 - **Fotocamera dal vivo** con riconoscimento dei bordi in tempo reale, flash, modalità singola o multipla, scatto automatico (si attiva dalle impostazioni)
 - **Importazione** dalla galleria, anche di più foto insieme
+- **Riconoscimento della pagina con intelligenza artificiale** (modello DocCornerNet tramite la libreria scanic), che gira sul telefono e distingue il foglio dal tavolo e dagli altri oggetti; la geometria rifinisce poi i bordi al pixel
 - **Bordi magnetici**: angoli e lati si agganciano ai bordi veri del foglio mentre li trascini
 - **Ritaglio** con 4 angoli e 4 lati trascinabili, lente d'ingrandimento, rilevamento automatico, rotazione
 - **Raddrizzamento prospettico** (omografia) fino a 2400 px
@@ -39,3 +40,4 @@ python -m http.server 8000
 ```
 poi apri http://localhost:8000 (la fotocamera funziona in locale solo su `localhost`).
 - Font Bricolage Grotesque (SIL Open Font License), in css/bricolage.woff2
+- Libreria scanic e modello scanic-ml (licenza MIT), in vendor/scanic e vendor/scanic-ml

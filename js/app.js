@@ -2,6 +2,7 @@
 import { db, uid } from './db.js';
 import { FILTERS, applyFilter, adjust, defaultCorners, orderCorners, makeImage } from './imgproc.js';
 import { detectQuad, intersect, lineThrough, bestLineNear } from './detect.js';
+import { detectML, warmUp } from './ml.js';
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -47,6 +48,7 @@ async function work(op, img, opts = {}) {
   const P = await import('./imgproc.js');
   if (op === 'detect') { const D = await import('./detect.js'); const r = D.detectQuad(copy); return r ? r.corners : null; }
   if (op === 'snap') { const D = await import('./detect.js'); return D.snapData(copy); }
+  if (op === 'fuse') { const D = await import('./detect.js'); return D.fuse(copy, opts.ml || null); }
   if (op === 'rotate') return P.rotate90(copy, opts.times);
   let out = copy;
   if (op === 'warp' || op === 'process') out = P.rotate90(P.warpPerspective(copy, opts.corners, opts.maxSide), opts.rotation || 0);
@@ -324,6 +326,7 @@ function cameraFallback(msg) {
   $('#cam-shutter').onclick = () => inp.click();
 }
 function stopCamera() {
+  liveML = null;
   clearInterval(liveTimer); liveTimer = null;
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
   torchOn = false; $('#cam-torch').classList.remove('on');
@@ -332,6 +335,7 @@ function stopCamera() {
 }
 
 const liveCanvas = document.createElement('canvas');
+let liveML = null, liveMLk = 1, liveBusy = false;
 function liveDetect() {
   const v = $('#video'); if (!v.videoWidth) return;
   const s = 260 / Math.max(v.videoWidth, v.videoHeight);
@@ -339,8 +343,17 @@ function liveDetect() {
   const ctx = liveCanvas.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(v, 0, 0, liveCanvas.width, liveCanvas.height);
   const id = ctx.getImageData(0, 0, liveCanvas.width, liveCanvas.height);
-  const found = detectQuad({ data: id.data, width: id.width, height: id.height });
-  const quad = found && found.confidence > 0.55 ? found.corners : null;
+  let quad = null;
+  if (liveML) quad = liveML.corners && liveML.score > 0.6 ? liveML.corners.map(([x, y]) => [x * liveMLk, y * liveMLk]) : null;
+  else { const found = detectQuad({ data: id.data, width: id.width, height: id.height }); quad = found && found.confidence > 0.55 ? found.corners : null; }
+  // l'IA lavora in parallelo su un fotogramma più grande; il risultato si usa al giro successivo
+  if (!liveBusy) {
+    liveBusy = true;
+    const big = document.createElement('canvas'); const k2 = 480 / Math.max(v.videoWidth, v.videoHeight);
+    big.width = Math.round(v.videoWidth * k2); big.height = Math.round(v.videoHeight * k2);
+    big.getContext('2d').drawImage(v, 0, 0, big.width, big.height);
+    detectML(big).then(r => { liveML = r; liveMLk = s / k2; }).finally(() => { liveBusy = false; });
+  }
   const ov = $('#cam-overlay'), dpr = devicePixelRatio || 1;
   const W = ov.clientWidth, H = ov.clientHeight;
   if (ov.width !== W * dpr) { ov.width = W * dpr; ov.height = H * dpr; }
@@ -393,11 +406,20 @@ function afterShot() {
   if (camMode === 'single') { session.idx = session.items.length - 1; go('crop'); }
 }
 
+// Trova la pagina: prima l'intelligenza artificiale (distingue il foglio dal tavolo),
+// poi la geometria rifinisce i bordi al pixel
+async function findPage(img) {
+  let ml = null;
+  try { ml = await detectML(imageToCanvas(img)); } catch { ml = null; }
+  const mlCorners = ml && ml.corners && ml.score > 0.4 ? ml.corners : null;
+  return work('fuse', img, { ml: mlCorners }).catch(() => mlCorners);
+}
+
 async function addCapture(blob) {
   const img = await decodeBlob(blob, maxSide());
   const raw = await imageToBlob(img, 'image/jpeg', 0.92);
   const it = newItem(raw, img.width, img.height);
-  const det = await work('detect', img).catch(() => null);
+  const det = await findPage(img).catch(() => null);
   it.corners = det || defaultCorners(img.width, img.height, 0.03);
   it.autoCorners = det;
   session.items.push(it);
@@ -549,7 +571,7 @@ window.addEventListener('resize', () => { if ($('#s-crop').classList.contains('a
 $('#crop-back').onclick = back;
 $('#crop-auto').onclick = async () => {
   const it = session.items[session.idx];
-  if (!it.autoCorners) { const img = await decodeBlob(it.raw, 900); const q = await work('detect', img); if (q) { const k = it.w / img.width; it.autoCorners = q.map(([x, y]) => [x * k, y * k]); } }
+  if (!it.autoCorners) { const img = await decodeBlob(it.raw, 99999); const q = await findPage(img); if (q) it.autoCorners = q; }
   if (it.autoCorners) { it.corners = it.autoCorners.map(p => p.slice()); drawCropOverlay(); } else toast('Bordi non trovati: regolali a mano');
 };
 $('#crop-full').onclick = () => { const it = session.items[session.idx]; it.corners = [[0, 0], [it.w, 0], [it.w, it.h], [0, it.h]]; drawCropOverlay(); };
@@ -1255,6 +1277,8 @@ async function openSettings() {
   await loadSettings();
   renderHome();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  // prepara il modello di intelligenza artificiale in background (la prima volta lo scarica, poi resta sul telefono)
+  setTimeout(warmUp, 1500);
   // condivisione verso MyScanner da altre app (Web Share Target): immagini in coda
   const params = new URLSearchParams(location.search);
   if (params.get('azione') === 'scansiona') startScan(null);

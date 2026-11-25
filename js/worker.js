@@ -1,5 +1,5 @@
 // MyScanner — worker per le elaborazioni pesanti, così l'interfaccia resta fluida
-import { detectQuad, snapData } from './detect.js';
+import { detectQuad, snapData, fuse } from './detect.js';
 import { warpPerspective, rotate90, applyFilter, adjust } from './imgproc.js';
 
 const wrap = img => ({ data: new Uint8ClampedArray(img.data.buffer || img.data), width: img.width, height: img.height });
@@ -11,6 +11,8 @@ self.onmessage = e => {
     if (op === 'detect') {
       const r = detectQuad(src);
       result = r ? r.corners : null;
+    } else if (op === 'fuse') {
+      result = fuse(src, opts.ml || null);
     } else if (op === 'snap') {
       result = snapData(src);
     } else if (op === 'warp') {
