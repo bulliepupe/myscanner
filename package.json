@@ -1,0 +1,19 @@
+{
+  "name": "myscanner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MyScanner - scanner di documenti di Bulli e Pupe S.r.l.",
+  "scripts": {
+    "prepara": "node scripts/copia-web.mjs && npx cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.6.2",
+    "@capacitor/app": "8.1.2",
+    "@capacitor/core": "8.6.2",
+    "@capacitor/filesystem": "8.1.5",
+    "@capacitor/share": "8.0.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.6.2"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "appId": "it.bulliepupe.myscanner",
+  "appName": "MyScanner",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#f3f1ec"
+  }
+}

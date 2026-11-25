@@ -161,7 +161,32 @@ function progressSheet(title) {
   };
 }
 
+// ---------- App Android (Capacitor) ----------
+const Cap = window.Capacitor;
+const isNative = !!(Cap && Cap.isNativePlatform && Cap.isNativePlatform());
+const plug = n => Cap && Cap.Plugins && Cap.Plugins[n];
+const blobToBase64 = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.onerror = rej; r.readAsDataURL(blob); });
+async function nativeWrite(blob, filename, directory, sub) {
+  const path = sub ? `${sub}/${filename}` : filename;
+  const r = await plug('Filesystem').writeFile({ path, data: await blobToBase64(blob), directory, recursive: true });
+  return r.uri;
+}
+async function nativeShare(files, title) {
+  const uris = [];
+  for (const f of files) uris.push(await nativeWrite(f.blob, f.name, 'CACHE', 'condivisi'));
+  try { await plug('Share').share({ title, files: uris, dialogTitle: 'Condividi' }); }
+  catch (e) { if (!/cancel/i.test(String(e && e.message))) throw e; }
+}
+
 async function shareOrDownload(blob, filename, mode) {
+  if (isNative) {
+    if (mode === 'download') {
+      try { await nativeWrite(blob, filename, 'DOCUMENTS', 'MyScanner'); toast('Salvato in Documenti › MyScanner'); return; }
+      catch { /* se non si può salvare, si apre la condivisione */ }
+    }
+    await nativeShare([{ blob, name: filename }], filename);
+    return;
+  }
   const file = new File([blob], filename, { type: blob.type });
   if (mode !== 'download' && navigator.canShare?.({ files: [file] })) {
     try { await navigator.share({ files: [file], title: filename }); return; }
@@ -819,6 +844,7 @@ async function duplicateDoc(doc) {
 }
 async function exportJPGs(doc) {
   const pages = await db.getPages(doc);
+  if (isNative) { await nativeShare(pages.map((p, i) => ({ blob: p.final, name: `${safeName(doc.name)}_${i + 1}.jpg` })), doc.name); return; }
   const files = pages.map((p, i) => new File([p.final], `${safeName(doc.name)}_${i + 1}.jpg`, { type: 'image/jpeg' }));
   if (navigator.canShare?.({ files })) { try { await navigator.share({ files, title: doc.name }); return; } catch (e) { if (e.name === 'AbortError') return; } }
   for (const f of files) { await shareOrDownload(f, f.name, 'download'); await sleep(300); }
@@ -953,7 +979,8 @@ function showOcrText(text, page) {
       try { await navigator.clipboard.writeText(ta.value); toast('Testo copiato'); } catch { ta.select(); document.execCommand('copy'); toast('Testo copiato'); }
     };
     s.querySelector('#ocr-share').onclick = async () => {
-      if (navigator.share) { try { await navigator.share({ text: ta.value }); } catch { /* annullato */ } }
+      if (isNative) { try { await plug('Share').share({ text: ta.value, dialogTitle: 'Condividi il testo' }); } catch { /* annullato */ } }
+      else if (navigator.share) { try { await navigator.share({ text: ta.value }); } catch { /* annullato */ } }
       else shareOrDownload(new Blob([ta.value], { type: 'text/plain' }), 'testo.txt');
     };
     const redo = s.querySelector('#ocr-redo');
@@ -1258,8 +1285,8 @@ async function openSettings() {
     <div class="field"><span>Scatto automatico quando il foglio è fermo</span><div class="opts">${o('autoShot', 'true', 'Attivo')}${o('autoShot', 'false', 'Spento')}</div></div>
     <div class="field"><span>Lingua OCR</span><div class="opts">${o('ocrLang', 'ita', 'Italiano')}${o('ocrLang', 'ita+eng', 'Italiano + Inglese')}${o('ocrLang', 'eng', 'Inglese')}</div></div>
     <div class="field"><span>Firme salvate: ${(settings.signatures || []).length}</span><div class="opts"><button id="st-sigdel">Elimina tutte le firme</button></div></div>
-    ${installEvt ? '<div class="row"><button class="btn primary" id="st-install">Installa MyScanner sulla schermata Home</button></div>' : ''}
-    <p class="muted" style="margin-top:16px">Documenti, firme e testi restano solo su questo telefono (nessun server). ${used}<br>MyScanner v2.0</p>`, s => {
+    ${installEvt && !isNative ? '<div class="row"><button class="btn primary" id="st-install">Installa MyScanner sulla schermata Home</button></div>' : ''}
+    <p class="muted" style="margin-top:16px">Documenti, firme e testi restano solo su questo telefono (nessun server). ${used}<br>MyScanner 1.0 · Bulli e Pupe S.r.l. · <a href="https://bulliepupe.github.io/foglio-scanner/privacy.html" target="_blank" rel="noopener">Informativa privacy</a></p>`, s => {
     s.querySelectorAll('.opts button[data-k]').forEach(b => b.onclick = async () => {
       const k = b.dataset.k; let v = b.dataset.v; if (k === 'autoShot') v = v === 'true';
       await saveSetting(k, v); s.querySelectorAll(`[data-k="${k}"]`).forEach(x => x.classList.toggle('on', x === b));
@@ -1276,7 +1303,14 @@ async function openSettings() {
 (async () => {
   await loadSettings();
   renderHome();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && !isNative) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if (isNative && plug('App')) {
+    // tasto Indietro di Android: chiude i fogli, torna alla schermata precedente, e dalla home esce
+    plug('App').addListener('backButton', () => {
+      if (!$('#sheet').classList.contains('hidden')) { closeSheet(); return; }
+      if (stack.length > 1) history.back(); else plug('App').exitApp();
+    });
+  }
   // prepara il modello di intelligenza artificiale in background (la prima volta lo scarica, poi resta sul telefono)
   setTimeout(warmUp, 1500);
   // condivisione verso MyScanner da altre app (Web Share Target): immagini in coda
