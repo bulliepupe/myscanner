@@ -1,0 +1,20 @@
+{
+  "name": "Foglio — scanner documenti",
+  "short_name": "Foglio",
+  "description": "Scansiona documenti con la fotocamera: raddrizzamento automatico, filtri, OCR, firma e PDF.",
+  "lang": "it",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f6f3ec",
+  "theme_color": "#f6f3ec",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Nuova scansione", "url": "./?azione=scansiona", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}
