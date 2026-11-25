@@ -57,7 +57,7 @@ Un'app di Bulli e Pupe S.r.l.
 
 **Categoria:** App › Produttività
 **Tag consigliati:** Scanner di documenti, Produttività, PDF
-**Email di contatto:** info@bulliepupeasilonido.it
+**Email di contatto:** alessandro.castrovinci@gmail.com
 **Sito web:** lasciare vuoto
 **Norme sulla privacy (URL):** https://bulliepupe.github.io/foglio-scanner/privacy.html
 
