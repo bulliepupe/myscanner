@@ -1,4 +1,4 @@
-// Foglio — elaborazione immagini (funzioni pure, nessuna dipendenza dal DOM)
+// MyScanner — elaborazione immagini (funzioni pure, nessuna dipendenza dal DOM)
 // Le immagini sono oggetti {data: Uint8ClampedArray RGBA, width, height}.
 
 export function makeImage(width, height) {

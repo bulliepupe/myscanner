@@ -1,6 +1,7 @@
-// Foglio — logica dell'app
+// MyScanner — logica dell'app
 import { db, uid } from './db.js';
-import { FILTERS, applyFilter, adjust, detectDocument, defaultCorners, orderCorners, makeImage } from './imgproc.js';
+import { FILTERS, applyFilter, adjust, defaultCorners, orderCorners, makeImage } from './imgproc.js';
+import { detectQuad, intersect, lineThrough, bestLineNear } from './detect.js';
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -44,7 +45,8 @@ async function work(op, img, opts = {}) {
   }
   // ripiego senza worker
   const P = await import('./imgproc.js');
-  if (op === 'detect') return P.detectDocument(copy);
+  if (op === 'detect') { const D = await import('./detect.js'); const r = D.detectQuad(copy); return r ? r.corners : null; }
+  if (op === 'snap') { const D = await import('./detect.js'); return D.snapData(copy); }
   if (op === 'rotate') return P.rotate90(copy, opts.times);
   let out = copy;
   if (op === 'warp' || op === 'process') out = P.rotate90(P.warpPerspective(copy, opts.corners, opts.maxSide), opts.rotation || 0);
@@ -98,6 +100,21 @@ async function thumbFrom(canvasOrBitmap, size = 360) {
 const urls = new Set();
 function objURL(blob) { const u = URL.createObjectURL(blob); urls.add(u); return u; }
 function freeURLs() { for (const u of urls) URL.revokeObjectURL(u); urls.clear(); }
+
+// ---------- Icone ----------
+const ICONS = {
+  camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
+  gallery: '<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="m21 16-5-5-9 9"/>',
+  edit: '<path d="m15 5 4 4L8 20H4v-4L15 5Z"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="m21 16-5-5-9 9"/>',
+  text: '<path d="M5 6V4h14v2M12 4v16M9 20h6"/>',
+  copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+  trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  first: '<path d="M6 5v14M18 6l-7 6 7 6"/>', prev: '<path d="m15 6-6 6 6 6"/>',
+  next: '<path d="m9 6 6 6-6 6"/>', last: '<path d="M18 5v14M6 6l7 6-7 6"/>',
+};
+const ic = n => `<svg viewBox="0 0 24 24">${ICONS[n]}</svg>`;
 
 // ---------- Interfaccia generica ----------
 function toast(msg, ms = 2200) {
@@ -153,6 +170,15 @@ async function shareOrDownload(blob, filename, mode) {
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 const safeName = n => (n || 'Documento').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 80);
+const relDate = t => {
+  const d = new Date(t), now = new Date();
+  const day = 864e5, diff = Math.floor((new Date(now.toDateString()) - new Date(d.toDateString())) / day);
+  const hm = d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+  if (diff === 0) return 'Oggi, ' + hm;
+  if (diff === 1) return 'Ieri, ' + hm;
+  if (diff < 7) return d.toLocaleDateString('it-IT', { weekday: 'long' });
+  return d.toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: diff > 300 ? 'numeric' : undefined });
+};
 const fmtDate = t => new Date(t).toLocaleString('it-IT', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 const defaultDocName = () => 'Scansione ' + new Date().toLocaleString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).replace(',', '');
 
@@ -209,8 +235,8 @@ async function renderHome() {
     const b = document.createElement('button'); b.className = 'chip' + (homeFolder === val ? ' on' : ''); b.textContent = label;
     b.onclick = () => { homeFolder = val; renderHome(); }; chips.appendChild(b);
   };
-  mk('Tutti', null); folders.forEach(f => mk('📁 ' + f, f));
-  const add = document.createElement('button'); add.className = 'chip'; add.textContent = '+ Cartella';
+  mk('Tutti', null); folders.forEach(f => mk(f, f));
+  const add = document.createElement('button'); add.className = 'chip add'; add.textContent = '+ Nuova cartella';
   add.onclick = async () => { const n = await askText('Nuova cartella', '', 'Es. Fatture, Contratti'); if (n) { await saveSetting('folders', [...new Set([...settings.folders, n])]); homeFolder = n; renderHome(); } };
   chips.appendChild(add);
 
@@ -218,19 +244,24 @@ async function renderHome() {
   let shown = docs.filter(d => !homeFolder || d.folder === homeFolder);
   if (q) shown = shown.filter(d => d.name.toLowerCase().includes(q) || (d.text || '').toLowerCase().includes(q));
   $('#empty').classList.toggle('hidden', docs.length > 0);
+  $('#doc-count').textContent = docs.length ? `${docs.length} ${docs.length === 1 ? 'documento' : 'documenti'}` : '';
+  $('#list-label').classList.toggle('hidden', docs.length === 0);
+  $('#list-label').textContent = q ? 'Risultati' : homeFolder ? homeFolder : 'Recenti';
+  const hr = new Date().getHours();
+  $('#greet').textContent = hr < 13 ? 'Buongiorno' : hr < 18 ? 'Buon pomeriggio' : 'Buonasera';
   list.classList.toggle('hidden', docs.length === 0);
   if (docs.length && !shown.length) list.innerHTML = '<p class="muted" style="text-align:center;padding:30px">Nessun risultato</p>';
   for (const d of shown) {
-    const el = document.createElement('button'); el.className = 'doc-item';
+    const el = document.createElement('button'); el.className = 'doc-card';
     let snip = '';
     if (q && d.text && !d.name.toLowerCase().includes(q)) {
       const i = d.text.toLowerCase().indexOf(q);
-      const a = Math.max(0, i - 25);
-      snip = `<div class="snip">…${esc(d.text.slice(a, i))}<mark>${esc(d.text.slice(i, i + q.length))}</mark>${esc(d.text.slice(i + q.length, i + q.length + 40))}</div>`;
+      const a = Math.max(0, i - 18);
+      snip = `<div class="snip">…${esc(d.text.slice(a, i))}<mark>${esc(d.text.slice(i, i + q.length))}</mark>${esc(d.text.slice(i + q.length, i + q.length + 24))}</div>`;
     }
-    el.innerHTML = `<img alt=""><div class="info"><div class="name">${esc(d.name)}</div>
-      <div class="sub">${d.pages.length} ${d.pages.length === 1 ? 'pagina' : 'pagine'} · ${fmtDate(d.updated)}</div>
-      ${snip}${d.folder ? `<span class="tag">📁 ${esc(d.folder)}</span>` : ''}</div>`;
+    el.innerHTML = `<div class="paper"><img alt="">${d.pages.length > 1 ? `<span class="pages">${d.pages.length}</span>` : ''}</div>
+      <div class="name">${esc(d.name)}</div>
+      <div class="sub">${relDate(d.updated)}${d.folder ? ` · ${esc(d.folder)}` : ''}</div>${snip}`;
     el.onclick = () => openDoc(d.id);
     list.appendChild(el);
     if (d.pages[0]) db.getPage(d.pages[0]).then(p => { if (p?.thumb) el.querySelector('img').src = objURL(p.thumb); });
@@ -308,7 +339,8 @@ function liveDetect() {
   const ctx = liveCanvas.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(v, 0, 0, liveCanvas.width, liveCanvas.height);
   const id = ctx.getImageData(0, 0, liveCanvas.width, liveCanvas.height);
-  const quad = detectDocument({ data: id.data, width: id.width, height: id.height }, 260);
+  const found = detectQuad({ data: id.data, width: id.width, height: id.height });
+  const quad = found && found.confidence > 0.55 ? found.corners : null;
   const ov = $('#cam-overlay'), dpr = devicePixelRatio || 1;
   const W = ov.clientWidth, H = ov.clientHeight;
   if (ov.width !== W * dpr) { ov.width = W * dpr; ov.height = H * dpr; }
@@ -404,6 +436,42 @@ async function renderCrop() {
   cropBitmap?.close?.();
   cropBitmap = await blobToBitmap(it.raw);
   layoutCrop();
+  if (!it.snap) {
+    decodeBlob(it.raw, 99999).then(img => work('snap', img)).then(d => { it.snap = d; }).catch(() => { it.snap = { lines: [], corners: [] }; });
+  }
+}
+
+// --- Bordi magnetici ---
+function snapCorner(it, p) {
+  const sd = it.snap; if (!sd) return { pt: p, snapped: false };
+  const Rc = 24 / cropView.s, Rl = 14 / cropView.s;
+  let best = null, bd = Rc;
+  // gli angoli trovati dal rilevamento automatico hanno la precedenza (attrazione doppia)
+  for (const c of it.autoCorners || []) { const d = Math.hypot(c[0] - p[0], c[1] - p[1]) * 0.5; if (d < bd) { bd = d; best = c; } }
+  for (const c of sd.corners) { const d = Math.hypot(c[0] - p[0], c[1] - p[1]); if (d < bd) { bd = d; best = c; } }
+  if (best) return { pt: best.slice(), snapped: 'corner' };
+  let bl = null, ld = Rl;
+  for (const l of sd.lines) { const d = Math.abs(p[0] * Math.cos(l.theta) + p[1] * Math.sin(l.theta) - l.rho); if (d < ld) { ld = d; bl = l; } }
+  if (bl) {
+    const d = p[0] * Math.cos(bl.theta) + p[1] * Math.sin(bl.theta) - bl.rho;
+    return { pt: [p[0] - d * Math.cos(bl.theta), p[1] - d * Math.sin(bl.theta)], snapped: 'line' };
+  }
+  return { pt: p, snapped: false };
+}
+function snapEdge(it, i, a, b, orig) {
+  const sd = it.snap; if (!sd) return null;
+  const l = bestLineNear(sd.lines, a, b, 18 / cropView.s);
+  if (!l) return null;
+  const j = (i + 1) % 4;
+  const prev = lineThrough(orig[(i + 3) % 4], orig[i]), next = lineThrough(orig[j], orig[(j + 1) % 4]);
+  const pa = intersect(prev, l), pb = intersect(next, l);
+  return pa && pb ? [pa, pb] : null;
+}
+let lastSnap = false;
+function markSnap(kind, idxs) {
+  $$('#crop-stage .handle').forEach((h, k) => h.classList.toggle('snapped', !!kind && idxs.includes(k)));
+  if (kind && !lastSnap) navigator.vibrate?.(12);
+  lastSnap = !!kind;
 }
 function layoutCrop() {
   const it = session.items[session.idx]; const st = $('#crop-stage');
@@ -456,18 +524,24 @@ $('#crop-stage').addEventListener('pointermove', e => {
   const it = session.items[session.idx];
   const dx = (e.clientX - cropDrag.start[0]) / cropView.s, dy = (e.clientY - cropDrag.start[1]) / cropView.s;
   if (cropDrag.type === 'corner') {
-    it.corners[cropDrag.i] = clampPt(it, [cropDrag.orig[cropDrag.i][0] + dx, cropDrag.orig[cropDrag.i][1] + dy]);
+    const raw = clampPt(it, [cropDrag.orig[cropDrag.i][0] + dx, cropDrag.orig[cropDrag.i][1] + dy]);
+    const sn = snapCorner(it, raw);
+    it.corners[cropDrag.i] = clampPt(it, sn.pt);
+    markSnap(sn.snapped, [cropDrag.i]);
     showLoupe(it.corners[cropDrag.i]);
   } else {
     const i = cropDrag.i, j = (i + 1) % 4; const a = cropDrag.orig[i], b = cropDrag.orig[j];
     let nx = -(b[1] - a[1]), ny = b[0] - a[0]; const L = Math.hypot(nx, ny) || 1; nx /= L; ny /= L;
     const d = dx * nx + dy * ny;
-    it.corners[i] = clampPt(it, [a[0] + nx * d, a[1] + ny * d]);
-    it.corners[j] = clampPt(it, [b[0] + nx * d, b[1] + ny * d]);
+    const na = [a[0] + nx * d, a[1] + ny * d], nb = [b[0] + nx * d, b[1] + ny * d];
+    const sn = snapEdge(it, i, na, nb, cropDrag.orig);
+    it.corners[i] = clampPt(it, sn ? sn[0] : na);
+    it.corners[j] = clampPt(it, sn ? sn[1] : nb);
+    markSnap(sn ? 'edge' : false, [i, j]);
   }
   drawCropOverlay();
 });
-const endCropDrag = () => { cropDrag = null; $('#loupe').style.display = 'none'; };
+const endCropDrag = () => { cropDrag = null; $('#loupe').style.display = 'none'; markSnap(false, []); };
 $('#crop-stage').addEventListener('pointerup', endCropDrag);
 $('#crop-stage').addEventListener('pointercancel', endCropDrag);
 window.addEventListener('resize', () => { if ($('#s-crop').classList.contains('active') && cropBitmap) layoutCrop(); });
@@ -488,7 +562,7 @@ $('#crop-rotl').onclick = async () => {
   const W = it.w;
   it.corners = orderCorners(it.corners.map(([x, y]) => [y, W - x]));
   if (it.autoCorners) it.autoCorners = orderCorners(it.autoCorners.map(([x, y]) => [y, W - x]));
-  [it.w, it.h] = [it.h, it.w]; it.preview = null;
+  [it.w, it.h] = [it.h, it.w]; it.preview = null; it.snap = null;
   renderCrop();
 };
 $('#crop-del').onclick = async () => {
@@ -648,7 +722,7 @@ async function renderDoc() {
   $('#doc-title').textContent = currentDoc.name;
   const pages = await db.getPages(currentDoc);
   const size = pages.reduce((s, p) => s + (p.final?.size || 0), 0);
-  $('#doc-meta').textContent = `${pages.length} ${pages.length === 1 ? 'pagina' : 'pagine'} · ${(size / 1048576).toFixed(1)} MB${currentDoc.folder ? ' · 📁 ' + currentDoc.folder : ''}`;
+  $('#doc-meta').textContent = `${pages.length} ${pages.length === 1 ? 'pagina' : 'pagine'} · ${(size / 1048576).toFixed(1)} MB${currentDoc.folder ? ' · ' + currentDoc.folder : ''}`;
   const grid = $('#page-grid'); grid.innerHTML = '';
   pages.forEach((p, i) => {
     const el = document.createElement('button'); el.className = 'pcard';
@@ -665,7 +739,7 @@ async function renameDoc() {
   if (n) { currentDoc.name = n; await db.putDoc(currentDoc); renderDoc(); }
 }
 $('#act-add').onclick = () => openSheet(`<h3>Aggiungi pagine</h3><div class="menu">
-  <button id="ad-cam">📷  Scatta con la fotocamera</button><button id="ad-gal">🖼️  Importa dalla galleria</button></div>`, s => {
+  <button id="ad-cam">${ic('camera')}Scatta con la fotocamera</button><button id="ad-gal">${ic('gallery')}Importa dalla galleria</button></div>`, s => {
   s.querySelector('#ad-cam').onclick = () => { closeSheet(); startScan(currentDoc.id); };
   s.querySelector('#ad-gal').onclick = () => { closeSheet(); importTarget = currentDoc.id; $('#file-import').click(); };
 });
@@ -679,12 +753,12 @@ $('#act-sign').onclick = async () => {
   });
 };
 $('#doc-more').onclick = () => openSheet(`<h3>${esc(currentDoc.name)}</h3><div class="menu">
-  <button id="m-ren">✏️  Rinomina</button>
-  <button id="m-fold">📁  Sposta in cartella</button>
-  <button id="m-jpg">🖼️  Esporta pagine come JPG</button>
-  <button id="m-txt">📝  Esporta testo (.txt)</button>
-  <button id="m-dup">📄  Duplica documento</button>
-  <button id="m-del" class="danger">🗑️  Elimina documento</button></div>`, s => {
+  <button id="m-ren">${ic('edit')}Rinomina</button>
+  <button id="m-fold">${ic('folder')}Sposta in cartella</button>
+  <button id="m-jpg">${ic('image')}Esporta pagine come JPG</button>
+  <button id="m-txt">${ic('text')}Esporta testo (.txt)</button>
+  <button id="m-dup">${ic('copy')}Duplica documento</button>
+  <button id="m-del" class="danger">${ic('trash')}Elimina documento</button></div>`, s => {
   s.querySelector('#m-ren').onclick = () => { closeSheet(); renameDoc(); };
   s.querySelector('#m-fold').onclick = () => { closeSheet(); chooseFolder(); };
   s.querySelector('#m-jpg').onclick = () => { closeSheet(); exportJPGs(currentDoc); };
@@ -706,7 +780,7 @@ async function chooseFolder() {
   const folders = [...new Set([...settings.folders, ...docs.map(d => d.folder).filter(Boolean)])].sort();
   openSheet(`<h3>Sposta in cartella</h3><div class="opts">
     <button data-f="" class="${!currentDoc.folder ? 'on' : ''}">Nessuna</button>
-    ${folders.map(f => `<button data-f="${esc(f)}" class="${currentDoc.folder === f ? 'on' : ''}">📁 ${esc(f)}</button>`).join('')}
+    ${folders.map(f => `<button data-f="${esc(f)}" class="${currentDoc.folder === f ? 'on' : ''}">${esc(f)}</button>`).join('')}
     <button id="f-new">+ Nuova</button></div>`, s => {
     s.querySelectorAll('button[data-f]').forEach(b => b.onclick = async () => { currentDoc.folder = b.dataset.f; await db.putDoc(currentDoc); closeSheet(); renderDoc(); });
     s.querySelector('#f-new').onclick = async () => {
@@ -777,8 +851,8 @@ $('#pg-ocr').onclick = async () => {
   } catch (err) { pr.done(); toast('OCR non riuscito: ' + err.message, 4000); }
 };
 $('#pg-left').onclick = () => openSheet(`<h3>Sposta pagina ${currentPageIdx + 1}</h3><div class="menu">
-  <button data-m="first">⏮  All'inizio</button><button data-m="prev">◀  Indietro di una</button>
-  <button data-m="next">▶  Avanti di una</button><button data-m="last">⏭  Alla fine</button></div>`, s => {
+  <button data-m="first">${ic('first')}All'inizio</button><button data-m="prev">${ic('prev')}Indietro di una</button>
+  <button data-m="next">${ic('next')}Avanti di una</button><button data-m="last">${ic('last')}Alla fine</button></div>`, s => {
   s.querySelectorAll('button[data-m]').forEach(b => b.onclick = async () => {
     closeSheet();
     const arr = currentDoc.pages, i = currentPageIdx, n = arr.length;
@@ -932,7 +1006,7 @@ async function buildPDF(doc, o, onProgress) {
     }
     await sleep(0);
   }
-  pdf.setProperties({ title: doc.name, creator: 'Foglio' });
+  pdf.setProperties({ title: doc.name, creator: 'MyScanner' });
   return pdf.output('blob');
 }
 
@@ -1162,8 +1236,8 @@ async function openSettings() {
     <div class="field"><span>Scatto automatico quando il foglio è fermo</span><div class="opts">${o('autoShot', 'true', 'Attivo')}${o('autoShot', 'false', 'Spento')}</div></div>
     <div class="field"><span>Lingua OCR</span><div class="opts">${o('ocrLang', 'ita', 'Italiano')}${o('ocrLang', 'ita+eng', 'Italiano + Inglese')}${o('ocrLang', 'eng', 'Inglese')}</div></div>
     <div class="field"><span>Firme salvate: ${(settings.signatures || []).length}</span><div class="opts"><button id="st-sigdel">Elimina tutte le firme</button></div></div>
-    ${installEvt ? '<div class="row"><button class="btn primary" id="st-install">Installa Foglio sulla schermata Home</button></div>' : ''}
-    <p class="muted" style="margin-top:16px">Documenti, firme e testi restano solo su questo telefono (nessun server). ${used}<br>Foglio v1.0</p>`, s => {
+    ${installEvt ? '<div class="row"><button class="btn primary" id="st-install">Installa MyScanner sulla schermata Home</button></div>' : ''}
+    <p class="muted" style="margin-top:16px">Documenti, firme e testi restano solo su questo telefono (nessun server). ${used}<br>MyScanner v2.0</p>`, s => {
     s.querySelectorAll('.opts button[data-k]').forEach(b => b.onclick = async () => {
       const k = b.dataset.k; let v = b.dataset.v; if (k === 'autoShot') v = v === 'true';
       await saveSetting(k, v); s.querySelectorAll(`[data-k="${k}"]`).forEach(x => x.classList.toggle('on', x === b));
@@ -1181,7 +1255,7 @@ async function openSettings() {
   await loadSettings();
   renderHome();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
-  // condivisione verso Foglio da altre app (Web Share Target): immagini in coda
+  // condivisione verso MyScanner da altre app (Web Share Target): immagini in coda
   const params = new URLSearchParams(location.search);
   if (params.get('azione') === 'scansiona') startScan(null);
 })();

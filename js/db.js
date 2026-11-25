@@ -1,4 +1,4 @@
-// Foglio — archivio locale su IndexedDB
+// MyScanner — archivio locale su IndexedDB
 const DB_NAME = 'foglio';
 const VERSION = 1;
 let dbp = null;

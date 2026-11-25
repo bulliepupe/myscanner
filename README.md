@@ -1,10 +1,11 @@
-# Foglio — scanner di documenti (PWA)
+# MyScanner — scanner di documenti (PWA)
 
 Web app installabile per scansionare documenti con la fotocamera del telefono. Tutto resta sul dispositivo: nessun server e nessun account.
 
 ## Funzioni
 - **Fotocamera dal vivo** con riconoscimento dei bordi in tempo reale, flash, modalità singola o multipla, scatto automatico (si attiva dalle impostazioni)
 - **Importazione** dalla galleria, anche di più foto insieme
+- **Bordi magnetici**: angoli e lati si agganciano ai bordi veri del foglio mentre li trascini
 - **Ritaglio** con 4 angoli e 4 lati trascinabili, lente d'ingrandimento, rilevamento automatico, rotazione
 - **Raddrizzamento prospettico** (omografia) fino a 2400 px
 - **8 filtri**: Originale, Migliora, Colore vivo, Documento, Grigi, B/N, Risparmio inchiostro, Senza ombre; più luminosità, contrasto e nitidezza. Si possono applicare a tutte le pagine.
@@ -20,7 +21,8 @@ Web app installabile per scansionare documenti con la fotocamera del telefono. T
 index.html            schermate dell'app
 css/style.css         stile
 js/app.js             logica dell'interfaccia
-js/imgproc.js         elaborazione immagini (rilevamento bordi, prospettiva, filtri)
+js/imgproc.js         elaborazione immagini (prospettiva, filtri)
+js/detect.js          rilevamento bordi a linee rette e bordi magnetici
 js/worker.js          esegue le elaborazioni pesanti in background
 js/db.js              archivio IndexedDB
 sw.js                 service worker (offline)
@@ -36,3 +38,4 @@ La fotocamera funziona solo in HTTPS, e GitHub Pages lo fornisce già.
 python -m http.server 8000
 ```
 poi apri http://localhost:8000 (la fotocamera funziona in locale solo su `localhost`).
+- Font Bricolage Grotesque (SIL Open Font License), in css/bricolage.woff2

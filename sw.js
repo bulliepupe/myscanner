@@ -1,11 +1,11 @@
-// Foglio — service worker: funziona offline dopo la prima apertura
-const VERSION = 'foglio-v1';
+// MyScanner — service worker: funziona offline dopo la prima apertura
+const VERSION = 'myscanner-v2';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/style.css',
   'js/app.js', 'js/db.js', 'js/imgproc.js', 'js/worker.js', 'vendor/jspdf.umd.min.js',
-  'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png',
+  'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/logo.svg', 'icons/apple-touch-icon.png', 'css/bricolage.woff2', 'js/detect.js',
 ];
-const RUNTIME = 'foglio-runtime'; // motore e lingue OCR scaricati da CDN
+const RUNTIME = 'myscanner-runtime'; // motore e lingue OCR scaricati da CDN
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

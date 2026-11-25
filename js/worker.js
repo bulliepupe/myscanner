@@ -1,5 +1,6 @@
-// Foglio — worker per le elaborazioni pesanti, così l'interfaccia resta fluida
-import { detectDocument, warpPerspective, rotate90, applyFilter, adjust } from './imgproc.js';
+// MyScanner — worker per le elaborazioni pesanti, così l'interfaccia resta fluida
+import { detectQuad, snapData } from './detect.js';
+import { warpPerspective, rotate90, applyFilter, adjust } from './imgproc.js';
 
 const wrap = img => ({ data: new Uint8ClampedArray(img.data.buffer || img.data), width: img.width, height: img.height });
 
@@ -8,7 +9,10 @@ self.onmessage = e => {
   try {
     let src = wrap(img), out, result;
     if (op === 'detect') {
-      result = detectDocument(src);
+      const r = detectQuad(src);
+      result = r ? r.corners : null;
+    } else if (op === 'snap') {
+      result = snapData(src);
     } else if (op === 'warp') {
       out = rotate90(warpPerspective(src, opts.corners, opts.maxSide), opts.rotation || 0);
     } else if (op === 'filter') {

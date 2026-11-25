@@ -3,34 +3,39 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<meta name="theme-color" content="#f6f3ec">
-<meta name="description" content="Foglio: scanner di documenti con raddrizzamento, filtri, OCR, firma e PDF. Tutto resta sul tuo telefono.">
-<title>Foglio — scanner documenti</title>
+<meta name="theme-color" content="#f3f1ec">
+<meta name="description" content="MyScanner: scanner di documenti con raddrizzamento, filtri, OCR, firma e PDF. Tutto resta sul tuo telefono.">
+<title>MyScanner</title>
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" href="icons/icon-192.png">
-<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="icon" href="icons/logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
 <!-- ARCHIVIO -->
 <section id="s-home" class="screen active">
-  <header class="topbar">
-    <div class="brand"><img src="icons/icon-192.png" alt=""><span>Foglio</span></div>
-    <button class="icon-btn" id="btn-settings" aria-label="Impostazioni"><svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></button>
+  <header class="home-head">
+    <div class="brand"><img src="icons/logo.svg" alt=""><span>My<b>Scanner</b></span></div>
+    <span class="count-pill" id="doc-count"></span>
   </header>
-  <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="search" type="search" placeholder="Cerca nei documenti e nel testo OCR"></div>
-  <div class="chips" id="folder-chips"></div>
-  <div id="doc-list" class="doc-list"></div>
-  <div id="empty" class="empty hidden">
-    <div class="empty-art"></div>
-    <h2>Nessun documento</h2>
-    <p>Tocca <b>Scansiona</b> per fotografare un foglio: i bordi vengono trovati e raddrizzati da soli.</p>
+  <div class="home-scroll" id="home-scroll">
+    <h1 class="greet" id="greet">Documenti</h1>
+    <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="search" type="search" placeholder="Cerca per nome o nel testo"></div>
+    <div class="chips" id="folder-chips"></div>
+    <div class="section-label" id="list-label">Recenti</div>
+    <div id="doc-list" class="doc-list"></div>
+    <div id="empty" class="empty hidden">
+      <div class="empty-art"><i></i><i></i><i></i><b></b></div>
+      <h2>Ancora nessun documento</h2>
+      <p>Tocca il pulsante blu e inquadra un foglio. Bordi, ritaglio e pulizia li sistema l'app.</p>
+    </div>
   </div>
-  <div class="fab-row">
-    <button class="fab ghost" id="btn-import"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 17-5-5-9 8"/></svg>Importa</button>
-    <button class="fab" id="btn-scan"><svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg>Scansiona</button>
-  </div>
+  <nav class="dock">
+    <button id="btn-import"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="m21 16-5-5-9 9"/></svg><span>Importa</span></button>
+    <button class="scan-btn" id="btn-scan" aria-label="Scansiona"><svg viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M3 12h18"/></svg></button>
+    <button id="btn-settings"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg><span>Impostazioni</span></button>
+  </nav>
   <input type="file" id="file-import" accept="image/*" multiple hidden>
 </section>
 
