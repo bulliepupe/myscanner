@@ -59,7 +59,7 @@ Un'app di Bulli e Pupe S.r.l.
 **Tag consigliati:** Scanner di documenti, Produttività, PDF
 **Email di contatto:** alessandro.castrovinci@gmail.com
 **Sito web:** lasciare vuoto
-**Norme sulla privacy (URL):** https://bulliepupe.github.io/foglio-scanner/privacy.html
+**Norme sulla privacy (URL):** https://bulliepupe.github.io/myscanner/privacy.html
 
 ---
 
@@ -67,7 +67,7 @@ Un'app di Bulli e Pupe S.r.l.
 
 | Sezione | Risposta |
 |---|---|
-| Norme sulla privacy | https://bulliepupe.github.io/foglio-scanner/privacy.html |
+| Norme sulla privacy | https://bulliepupe.github.io/myscanner/privacy.html |
 | Annunci | No, la mia app non contiene annunci |
 | Accesso all'app | Tutte le funzionalità sono disponibili senza restrizioni di accesso |
 | Classificazione dei contenuti | Questionario: categoria "Utilità, produttività, comunicazione o altro"; rispondere No a tutte le domande (violenza, contenuti sessuali, linguaggio, sostanze, gioco d'azzardo, interazione tra utenti, condivisione posizione, acquisti digitali) |

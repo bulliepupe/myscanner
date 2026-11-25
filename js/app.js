@@ -1286,7 +1286,7 @@ async function openSettings() {
     <div class="field"><span>Lingua OCR</span><div class="opts">${o('ocrLang', 'ita', 'Italiano')}${o('ocrLang', 'ita+eng', 'Italiano + Inglese')}${o('ocrLang', 'eng', 'Inglese')}</div></div>
     <div class="field"><span>Firme salvate: ${(settings.signatures || []).length}</span><div class="opts"><button id="st-sigdel">Elimina tutte le firme</button></div></div>
     ${installEvt && !isNative ? '<div class="row"><button class="btn primary" id="st-install">Installa MyScanner sulla schermata Home</button></div>' : ''}
-    <p class="muted" style="margin-top:16px">Documenti, firme e testi restano solo su questo telefono (nessun server). ${used}<br>MyScanner 1.0 · Bulli e Pupe S.r.l. · <a href="https://bulliepupe.github.io/foglio-scanner/privacy.html" target="_blank" rel="noopener">Informativa privacy</a></p>`, s => {
+    <p class="muted" style="margin-top:16px">Documenti, firme e testi restano solo su questo telefono (nessun server). ${used}<br>MyScanner 1.0 · Bulli e Pupe S.r.l. · <a href="https://bulliepupe.github.io/myscanner/privacy.html" target="_blank" rel="noopener">Informativa privacy</a></p>`, s => {
     s.querySelectorAll('.opts button[data-k]').forEach(b => b.onclick = async () => {
       const k = b.dataset.k; let v = b.dataset.v; if (k === 'autoShot') v = v === 'true';
       await saveSetting(k, v); s.querySelectorAll(`[data-k="${k}"]`).forEach(x => x.classList.toggle('on', x === b));
