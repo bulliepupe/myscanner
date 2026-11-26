@@ -2,7 +2,7 @@
 import { db, uid } from './db.js';
 import { FILTERS, applyFilter, adjust, defaultCorners, orderCorners, makeImage } from './imgproc.js';
 import { detectQuad, intersect, lineThrough, bestLineNear } from './detect.js';
-import { detectML, warmUp } from './ml.js';
+import { detectML, warmUp, mlAvailable } from './ml.js';
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -35,6 +35,13 @@ try {
   worker.onerror = () => { worker = null; };
 } catch { worker = null; }
 
+// richiesta al worker senza immagine (usa quelle già in memoria nel worker)
+function workKey(op, opts = {}) {
+  if (!worker) return Promise.reject(new Error('worker non disponibile'));
+  const id = ++wseq;
+  return new Promise((resolve, reject) => { wpending.set(id, { resolve, reject }); worker.postMessage({ id, op, opts }); });
+}
+
 async function work(op, img, opts = {}) {
   const copy = { data: img.data.slice(), width: img.width, height: img.height };
   if (worker) {
@@ -55,6 +62,12 @@ async function work(op, img, opts = {}) {
   if (op === 'filter' || op === 'process') out = P.adjust(P.applyFilter(out, opts.filter), opts.adj);
   return out;
 }
+
+// ---------- Tempi (per capire dove l'app rallenta; visibili nelle Impostazioni) ----------
+const timings = {};
+let camInfo = '';
+const tmark = () => performance.now();
+const tset = (k, t0) => { timings[k] = Math.round(performance.now() - t0); };
 
 // ---------- Utilità immagini ----------
 async function blobToBitmap(blob) {
@@ -244,7 +257,7 @@ let session = null;         // scansione in corso: {items, idx, docId, editPageI
 let homeFolder = null;      // filtro cartella
 
 function newItem(raw, w, h) {
-  return { raw, w, h, corners: null, rotation: 0, filter: settings.defaultFilter, adj: { brightness: 0, contrast: 0, sharpness: 0 } };
+  return { raw, w, h, rawRot: 0, corners: null, rotation: 0, filter: settings.defaultFilter, adj: { brightness: 0, contrast: 0, sharpness: 0 } };
 }
 
 // ==========================================================
@@ -332,13 +345,15 @@ async function startCamera() {
   $('#cam-hint').textContent = 'Inquadra il documento'; $('#cam-hint').classList.remove('ok');
   if (!navigator.mediaDevices?.getUserMedia) { cameraFallback('Fotocamera non disponibile in questo browser'); return; }
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 } } });
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 2560 }, height: { ideal: 1920 }, aspectRatio: { ideal: 4 / 3 }, resizeMode: { ideal: 'none' } } });
     const v = $('#video'); v.srcObject = stream; await v.play().catch(() => {});
     const track = stream.getVideoTracks()[0];
     const caps = track.getCapabilities?.() || {};
     $('#cam-torch').classList.toggle('hidden', !caps.torch);
     if (caps.focusMode?.includes('continuous')) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
-    liveTimer = setInterval(liveDetect, 220);
+    // nessuno zoom: inquadratura più ampia possibile
+    if (caps.zoom && caps.zoom.min != null) track.applyConstraints({ advanced: [{ zoom: Math.max(caps.zoom.min, 1) }] }).catch(() => {});
+    liveTimer = setInterval(liveDetect, 300);
   } catch (err) {
     cameraFallback(err.name === 'NotAllowedError' ? 'Permesso fotocamera negato' : 'Fotocamera non disponibile');
   }
@@ -360,37 +375,42 @@ function stopCamera() {
 }
 
 const liveCanvas = document.createElement('canvas');
-let liveML = null, liveMLk = 1, liveBusy = false;
+let liveML = null, liveMLk = 1, liveBusy = false, liveMLok = true;
+// Rilevamento dal vivo: un solo calcolo alla volta, così il telefono non si satura.
+// Se l'IA è disponibile si usa solo lei (su un fotogramma piccolo); altrimenti il metodo geometrico.
 function liveDetect() {
-  const v = $('#video'); if (!v.videoWidth) return;
+  const v = $('#video'); if (!v.videoWidth || liveBusy) return;
   const s = 260 / Math.max(v.videoWidth, v.videoHeight);
   liveCanvas.width = Math.round(v.videoWidth * s); liveCanvas.height = Math.round(v.videoHeight * s);
-  const ctx = liveCanvas.getContext('2d', { willReadFrequently: true });
+  const ctx = liveCanvas.getContext('2d', { willReadFrequently: !liveMLok });
   ctx.drawImage(v, 0, 0, liveCanvas.width, liveCanvas.height);
-  const id = ctx.getImageData(0, 0, liveCanvas.width, liveCanvas.height);
-  let quad = null;
-  if (liveML) quad = liveML.corners && liveML.score > 0.6 ? liveML.corners.map(([x, y]) => [x * liveMLk, y * liveMLk]) : null;
-  else { const found = detectQuad({ data: id.data, width: id.width, height: id.height }); quad = found && found.confidence > 0.55 ? found.corners : null; }
-  // l'IA lavora in parallelo su un fotogramma più grande; il risultato si usa al giro successivo
-  if (!liveBusy) {
+  if (liveMLok) {
     liveBusy = true;
-    const big = document.createElement('canvas'); const k2 = 480 / Math.max(v.videoWidth, v.videoHeight);
-    big.width = Math.round(v.videoWidth * k2); big.height = Math.round(v.videoHeight * k2);
-    big.getContext('2d').drawImage(v, 0, 0, big.width, big.height);
-    detectML(big).then(r => { liveML = r; liveMLk = s / k2; }).finally(() => { liveBusy = false; });
+    detectML(liveCanvas).then(r => {
+      if (!r) { if (!mlAvailable()) liveMLok = false; return; }
+      liveML = r; liveMLk = 1; drawLive(v, s, r.corners && r.score > 0.6 ? r.corners : null);
+    }).finally(() => { liveBusy = false; });
+    return;
   }
+  const id = ctx.getImageData(0, 0, liveCanvas.width, liveCanvas.height);
+  const found = detectQuad({ data: id.data, width: id.width, height: id.height });
+  drawLive(v, s, found && found.confidence > 0.55 ? found.corners : null);
+}
+function drawLive(v, s, quad) {
+  if (!stream) return;
   const ov = $('#cam-overlay'), dpr = devicePixelRatio || 1;
   const W = ov.clientWidth, H = ov.clientHeight;
   if (ov.width !== W * dpr) { ov.width = W * dpr; ov.height = H * dpr; }
   const g = ov.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
   const hint = $('#cam-hint');
   if (!quad) { lastQuad = null; stableCount = 0; hint.textContent = 'Inquadra il documento'; hint.classList.remove('ok'); return; }
-  // da coordinate ridotte a schermo (object-fit: cover)
-  const sc = Math.max(W / v.videoWidth, H / v.videoHeight);
+  // da coordinate ridotte a schermo
+  // l'inquadratura è mostrata intera (object-fit: contain), uguale alla foto che verrà scattata
+  const sc = Math.min(W / v.videoWidth, H / v.videoHeight);
   const ox = (W - v.videoWidth * sc) / 2, oy = (H - v.videoHeight * sc) / 2;
   const pts = quad.map(([x, y]) => [x / s * sc + ox, y / s * sc + oy]);
   g.beginPath(); pts.forEach((p, i) => i ? g.lineTo(...p) : g.moveTo(...p)); g.closePath();
-  g.fillStyle = 'rgba(228,87,46,.18)'; g.fill(); g.lineWidth = 3; g.strokeStyle = '#e4572e'; g.stroke();
+  g.fillStyle = 'rgba(212,245,60,.16)'; g.fill(); g.lineWidth = 3; g.strokeStyle = '#d4f53c'; g.stroke();
   pts.forEach(p => { g.beginPath(); g.arc(p[0], p[1], 6, 0, 7); g.fillStyle = '#fff'; g.fill(); });
   // stabilità per lo scatto automatico
   const norm = quad.map(([x, y]) => [x / liveCanvas.width, y / liveCanvas.height]);
@@ -406,23 +426,30 @@ function liveDetect() {
   } else hint.textContent = 'Documento trovato';
 }
 
+let shooting = false;
 async function shoot() {
-  const v = $('#video'); if (!stream || !v.videoWidth) return;
+  const v = $('#video'); if (!stream || !v.videoWidth || shooting) return;
+  shooting = true;
+  try { await shootInner(v); } finally { shooting = false; $('#cam-busy').classList.add('hidden'); }
+}
+async function shootInner(v) {
+  // l'inquadratura si "congela" subito e compare l'avviso, così si capisce che lo scatto è partito
+  clearInterval(liveTimer); liveTimer = null;
+  const fr = $('#cam-freeze'); fr.width = v.videoWidth; fr.height = v.videoHeight; fr.getContext('2d').drawImage(v, 0, 0);
+  $('#cam-busy').classList.remove('hidden');
+  const t0 = tmark();
   const fx = $('#flash-fx'); fx.classList.add('go'); setTimeout(() => fx.classList.remove('go'), 60);
   navigator.vibrate?.(30);
-  let blob = null;
-  try {
-    const track = stream.getVideoTracks()[0];
-    if ('ImageCapture' in window && !torchOn) {
-      blob = await new ImageCapture(track).takePhoto().catch(() => null);
-    }
-  } catch { blob = null; }
-  if (!blob) {
-    const c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight;
-    c.getContext('2d').drawImage(v, 0, 0); blob = await canvasToBlob(c, 'image/jpeg', 0.95);
-  }
-  await addCapture(blob);
+  // la foto è il fotogramma dell'inquadratura: quello che vedi è esattamente quello che ottieni
+  // (la foto "piena" del sensore su molti telefoni ha un campo diverso dall'anteprima)
+  const kk = Math.min(1, maxSide() / Math.max(v.videoWidth, v.videoHeight));
+  const c = document.createElement('canvas'); c.width = Math.round(v.videoWidth * kk); c.height = Math.round(v.videoHeight * kk);
+  c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+  camInfo = `${v.videoWidth}×${v.videoHeight}`;
+  tset('scatto', t0);
+  await addCapture(c);
   afterShot();
+  if (stream && !liveTimer) liveTimer = setInterval(liveDetect, 300); // modalità multipla: si continua a inquadrare
 }
 $('#cam-shutter').onclick = shoot;
 
@@ -433,19 +460,70 @@ function afterShot() {
 
 // Trova la pagina: prima l'intelligenza artificiale (distingue il foglio dal tavolo),
 // poi la geometria rifinisce i bordi al pixel
-async function findPage(img) {
+// img va passata già ridotta (circa 1000 px): il rilevamento non ha bisogno di più dettaglio
+async function findPage(img, canvas) {
   let ml = null;
-  try { ml = await detectML(imageToCanvas(img)); } catch { ml = null; }
+  try { ml = await detectML(canvas || imageToCanvas(img)); } catch { ml = null; }
   const mlCorners = ml && ml.corners && ml.score > 0.4 ? ml.corners : null;
   return work('fuse', img, { ml: mlCorners }).catch(() => mlCorners);
 }
+// versione ridotta di un'immagine (canvas + pixel) per rilevamento e bordi magnetici
+function smallCopy(src, limit) {
+  const [w, h] = srcSize(src); const k = Math.min(1, limit / Math.max(w, h));
+  const c = document.createElement('canvas'); c.width = Math.round(w * k); c.height = Math.round(h * k);
+  const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(src, 0, 0, c.width, c.height);
+  const d = g.getImageData(0, 0, c.width, c.height);
+  return { canvas: c, img: { data: d.data, width: d.width, height: d.height } };
+}
+// immagine ruotata di r quarti di giro in senso antiorario, ridotta entro "limit" pixel
+function rotatedCanvas(src, r, limit = Infinity) {
+  r = ((r % 4) + 4) % 4;
+  const [w, h] = srcSize(src); const s = Math.min(1, limit / Math.max(w, h));
+  const sw = Math.round(w * s), sh = Math.round(h * s);
+  const c = document.createElement('canvas'); c.width = r % 2 ? sh : sw; c.height = r % 2 ? sw : sh;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.translate(c.width / 2, c.height / 2); g.rotate(-r * Math.PI / 2); g.drawImage(src, -sw / 2, -sh / 2, sw, sh);
+  return c;
+}
+// foto originale di una scansione, già ruotata come nel ritaglio
+async function decodeRaw(it, limit) {
+  const bm = await blobToBitmap(it.raw);
+  const c = rotatedCanvas(bm, it.rawRot || 0, limit); bm.close?.();
+  const d = c.getContext('2d').getImageData(0, 0, c.width, c.height);
+  return { data: d.data, width: d.width, height: d.height, canvas: c };
+}
+async function detectOnItem(it) {
+  const r = await decodeRaw(it, 1000);
+  const sm = { canvas: r.canvas, img: { data: r.data, width: r.width, height: r.height } };
+  const q = await findPage(sm.img, sm.canvas);
+  const k = it.w / sm.img.width;
+  return q ? q.map(([x, y]) => [x * k, y * k]) : null;
+}
+async function detectOnBlob(blob, fullW) {
+  const bm = await blobToBitmap(blob);
+  const sm = smallCopy(bm, 1000); bm.close?.();
+  const q = await findPage(sm.img, sm.canvas);
+  const k = fullW / sm.img.width;
+  return q ? q.map(([x, y]) => [x * k, y * k]) : null;
+}
 
 async function addCapture(blob) {
-  const img = await decodeBlob(blob, maxSide());
-  const raw = await imageToBlob(img, 'image/jpeg', 0.92);
-  const it = newItem(raw, img.width, img.height);
-  const det = await findPage(img).catch(() => null);
-  it.corners = det || defaultCorners(img.width, img.height, 0.03);
+  let t0 = tmark();
+  const bm = blob instanceof Blob ? await blobToBitmap(blob) : blob; // foto da file, oppure fotogramma già pronto
+  const [w0, h0] = srcSize(bm); const k = Math.min(1, maxSide() / Math.max(w0, h0));
+  const full = document.createElement('canvas'); full.width = Math.round(w0 * k); full.height = Math.round(h0 * k);
+  full.getContext('2d').drawImage(bm, 0, 0, full.width, full.height);
+  const sm = smallCopy(full, 1000); if (bm.close) bm.close();
+  tset('lettura foto', t0);
+  // la compressione dell'originale e il rilevamento della pagina procedono insieme
+  const rawP = canvasToBlob(full, 'image/jpeg', 0.92);
+  t0 = tmark();
+  const q = await findPage(sm.img, sm.canvas).catch(() => null);
+  tset('rilevamento pagina', t0);
+  const ks = full.width / sm.img.width;
+  const det = q ? q.map(([x, y]) => [x * ks, y * ks]) : null;
+  const it = newItem(await rawP, full.width, full.height);
+  it.corners = det || defaultCorners(full.width, full.height, 0.03);
   it.autoCorners = det;
   session.items.push(it);
   return it;
@@ -481,10 +559,14 @@ async function renderCrop() {
   $('#crop-title').textContent = session.items.length > 1 ? `Ritaglia ${session.idx + 1}/${session.items.length}` : 'Ritaglia';
   $('#crop-next').textContent = session.editPageId ? 'Fatto' : (session.idx < session.items.length - 1 ? 'Avanti' : 'Avanti');
   cropBitmap?.close?.();
-  cropBitmap = await blobToBitmap(it.raw);
+  const bm = await blobToBitmap(it.raw);
+  cropBitmap = it.rawRot ? rotatedCanvas(bm, it.rawRot) : bm;
   layoutCrop();
   if (!it.snap) {
-    decodeBlob(it.raw, 99999).then(img => work('snap', img)).then(d => { it.snap = d; }).catch(() => { it.snap = { lines: [], corners: [] }; });
+    decodeRaw(it, 1400).then(img => work('snap', img).then(d => {
+      const k = it.w / img.width;
+      it.snap = { lines: d.lines.map(l => ({ ...l, rho: l.rho * k })), corners: d.corners.map(([x, y]) => [x * k, y * k]) };
+    })).catch(() => { it.snap = { lines: [], corners: [] }; });
   }
 }
 
@@ -593,24 +675,40 @@ $('#crop-stage').addEventListener('pointerup', endCropDrag);
 $('#crop-stage').addEventListener('pointercancel', endCropDrag);
 window.addEventListener('resize', () => { if ($('#s-crop').classList.contains('active') && cropBitmap) layoutCrop(); });
 
-$('#crop-back').onclick = back;
+$('#crop-back').onclick = () => {
+  // tornando alla fotocamera per rifare la foto, lo scatto scartato non deve restare in coda
+  if (session && !session.editPageId && !session.fromFilter && camMode === 'single' && stack[stack.length - 2] === 'camera') {
+    session.items.splice(session.idx, 1);
+    session.idx = Math.max(0, session.items.length - 1);
+  }
+  session && (session.fromFilter = false);
+  back();
+};
 $('#crop-auto').onclick = async () => {
   const it = session.items[session.idx];
-  if (!it.autoCorners) { const img = await decodeBlob(it.raw, 99999); const q = await findPage(img); if (q) it.autoCorners = q; }
+  if (!it.autoCorners) { const q = await detectOnItem(it); if (q) it.autoCorners = q; }
   if (it.autoCorners) { it.corners = it.autoCorners.map(p => p.slice()); drawCropOverlay(); } else toast('Bordi non trovati: regolali a mano');
 };
 $('#crop-full').onclick = () => { const it = session.items[session.idx]; it.corners = [[0, 0], [it.w, 0], [it.w, it.h], [0, it.h]]; drawCropOverlay(); };
-$('#crop-rotl').onclick = async () => {
-  // ruota l'immagine sorgente di 90° in senso antiorario, angoli compresi
-  const it = session.items[session.idx];
-  const img = await decodeBlob(it.raw, 99999);
-  const rot = await work('rotate', img, { times: 3 });
-  it.raw = await imageToBlob(rot, 'image/jpeg', 0.92);
-  const W = it.w;
-  it.corners = orderCorners(it.corners.map(([x, y]) => [y, W - x]));
-  if (it.autoCorners) it.autoCorners = orderCorners(it.autoCorners.map(([x, y]) => [y, W - x]));
-  [it.w, it.h] = [it.h, it.w]; it.preview = null; it.snap = null;
-  renderCrop();
+// Rotazione nel ritaglio: immediata. La foto originale non viene ricalcolata:
+// si ruotano solo l'immagine a schermo e gli angoli, e la rotazione si applica al salvataggio.
+function rotLine(l, W) {
+  // (x, y) -> (y, W - x): la retta x·cosθ + y·sinθ = ρ diventa X·sinθ − Y·cosθ = ρ − W·cosθ
+  let theta = l.theta - Math.PI / 2, rho = l.rho - W * Math.cos(l.theta);
+  if (theta < 0) { theta += Math.PI; rho = -rho; }
+  return { ...l, theta, rho };
+}
+$('#crop-rotl').onclick = () => {
+  const it = session.items[session.idx]; if (!cropBitmap) return;
+  const W = it.w, rot = ([x, y]) => [y, W - x];
+  it.rawRot = ((it.rawRot || 0) + 1) % 4;
+  it.corners = orderCorners(it.corners.map(rot));
+  if (it.autoCorners) it.autoCorners = orderCorners(it.autoCorners.map(rot));
+  if (it.snap) it.snap = { lines: it.snap.lines.map(l => rotLine(l, W)), corners: it.snap.corners.map(rot) };
+  [it.w, it.h] = [it.h, it.w];
+  it.preview = null;
+  cropBitmap = rotatedCanvas(cropBitmap, 1);
+  layoutCrop();
 };
 $('#crop-del').onclick = async () => {
   session.items.splice(session.idx, 1);
@@ -634,8 +732,14 @@ async function getPreview(it) {
   // immagine raddrizzata a risoluzione ridotta, riutilizzata per le anteprime
   const key = JSON.stringify([it.corners, it.rotation]);
   if (it.preview && it.previewKey === key) return it.preview;
-  const raw = await decodeBlob(it.raw, 99999);
-  it.preview = await work('warp', raw, { corners: it.corners, rotation: it.rotation, maxSide: 1100 });
+  const t0 = tmark();
+  const raw = await decodeRaw(it, 1600);
+  const k = raw.width / it.w;
+  it.preview = await work('warp', raw, { corners: it.corners.map(([x, y]) => [x * k, y * k]), rotation: it.rotation, maxSide: 900 });
+  if (it.fcache) Object.values(it.fcache).forEach(b => b.close && b.close());
+  it.previewId = uid(); it.fcache = {};
+  if (worker) await work('cacheImg', it.preview, { key: it.previewId }).catch(() => { it.previewId = null; });
+  tset('anteprima', t0);
   it.previewKey = key; it.thumbs = null;
   return it.preview;
 }
@@ -668,16 +772,50 @@ function renderStrip(it, prev) {
     strip.appendChild(el);
   }
 }
+const fkey = it => `${it.filter}|${it.adj.brightness}|${it.adj.contrast}|${it.adj.sharpness}`;
+async function filteredURL(it, filter, adj) {
+  const key = `${filter}|${adj.brightness}|${adj.contrast}|${adj.sharpness}`;
+  if (it.fcache && it.fcache[key]) return it.fcache[key];
+  const t0 = tmark();
+  let out;
+  if (it.previewId) out = await workKey('filterKey', { key: it.previewId, filter, adj }).catch(() => null);
+  if (!out) out = await work('filter', it.preview, { filter, adj });
+  // niente compressione JPEG: l'immagine filtrata va dritta sullo schermo
+  const bmp = await createImageBitmap(new ImageData(out.data, out.width, out.height));
+  (it.fcache ||= {})[key] = bmp;
+  tset('calcolo filtro', t0);
+  return bmp;
+}
+function showFiltered(bmp) {
+  const c = $('#filter-img');
+  if (c.width !== bmp.width || c.height !== bmp.height) { c.width = bmp.width; c.height = bmp.height; }
+  c.getContext('2d').drawImage(bmp, 0, 0);
+}
+let userFilterReq = 0;
 async function updateFilterPreview() {
   const it = session.items[session.idx]; const req = ++filterReq;
-  $('#filter-busy').classList.remove('hidden');
-  const prev = await getPreview(it);
-  const out = await work('filter', prev, { filter: it.filter, adj: it.adj });
+  const tTap = tmark();
+  await getPreview(it);
+  const key = fkey(it);
+  const cached = it.fcache && it.fcache[key];
+  if (!cached) $('#filter-busy').classList.remove('hidden');
+  userFilterReq++;
+  const bmp = cached || await filteredURL(it, it.filter, { ...it.adj });
+  userFilterReq--;
   if (req !== filterReq) return;
-  const blob = await imageToBlob(out, 'image/jpeg', 0.85);
-  const im = $('#filter-img'); if (im.dataset.u) URL.revokeObjectURL(im.dataset.u);
-  const u = URL.createObjectURL(blob); im.src = u; im.dataset.u = u;
+  showFiltered(bmp);
   $('#filter-busy').classList.add('hidden');
+  tset('cambio filtro (tocco → immagine)', tTap);
+  setTimeout(() => prefetchFilters(it, req), 400);
+}
+// dopo aver mostrato il filtro scelto, prepara in sottofondo gli altri, uno alla volta,
+// fermandosi appena tocchi qualcosa: la tua scelta ha sempre la precedenza
+async function prefetchFilters(it, req) {
+  const adj = { ...it.adj };
+  for (const f of FILTERS) {
+    if (req !== filterReq || userFilterReq > 0 || session?.items[session.idx] !== it) return;
+    try { await filteredURL(it, f.id, adj); } catch { return; }
+  }
 }
 let adjT;
 ['b', 'c', 's'].forEach(k => $('#adj-' + k).oninput = () => {
@@ -686,7 +824,19 @@ let adjT;
   clearTimeout(adjT); adjT = setTimeout(updateFilterPreview, 120);
 });
 $('#f-adj').onclick = () => { $('#sliders').classList.toggle('hidden'); $('#f-adj').classList.toggle('on'); };
-$('#f-rot').onclick = () => { const it = session.items[session.idx]; it.rotation = (it.rotation + 1) % 4; renderFilter(); };
+// Rotazione nei filtri: l'immagine gira subito, il ricalcolo parte una volta sola dopo l'ultimo tocco
+let fRotPending = 0, fRotTimer = null;
+$('#f-rot').onclick = () => {
+  fRotPending++;
+  const im = $('#filter-img'); im.style.transition = 'transform .15s'; im.style.transform = `rotate(${90 * fRotPending}deg)`;
+  clearTimeout(fRotTimer);
+  fRotTimer = setTimeout(async () => {
+    const it = session.items[session.idx];
+    it.rotation = (it.rotation + fRotPending) % 4; fRotPending = 0;
+    await renderFilter();
+    im.style.transition = ''; im.style.transform = '';
+  }, 450);
+};
 $('#f-all').onclick = () => {
   const it = session.items[session.idx];
   session.items.forEach(x => { x.filter = it.filter; x.adj = { ...it.adj }; });
@@ -699,9 +849,11 @@ $('#filter-back').onclick = back;
 $('#filter-save').onclick = saveSession;
 
 async function processItemFull(it) {
-  const raw = await decodeBlob(it.raw, 99999);
+  const t0 = tmark();
+  const raw = await decodeRaw(it, 99999);
   const out = await work('process', raw, { corners: it.corners, rotation: it.rotation, filter: it.filter, adj: it.adj, maxSide: maxSide() });
   const canvas = imageToCanvas(out);
+  tset('elaborazione pagina', t0);
   return { canvas, w: out.width, h: out.height };
 }
 
@@ -714,6 +866,7 @@ async function composeFinal(baseCanvas, annotBlob) {
 }
 
 async function saveSession() {
+  const tSave = tmark();
   const n = session.items.length;
   const pr = progressSheet(n > 1 ? `Salvataggio di ${n} pagine` : 'Salvataggio');
   try {
@@ -731,7 +884,7 @@ async function saveSession() {
       const thumb = await thumbFrom(annot ? await blobToBitmap(final) : canvas);
       const rec = {
         ...(page || { id: uid(), docId: doc.id, ocr: null }),
-        raw: it.raw, corners: it.corners, rotation: it.rotation, filter: it.filter, adj: it.adj, rw: it.w, rh: it.h,
+        raw: it.raw, rawRot: it.rawRot || 0, corners: it.corners, rotation: it.rotation, filter: it.filter, adj: it.adj, rw: it.w, rh: it.h,
         base, annot, final, thumb, w, h,
       };
       if (page && (page.w !== w || page.h !== h)) rec.ocr = null; // l'OCR non corrisponde più
@@ -742,6 +895,7 @@ async function saveSession() {
     doc.text = await docText(doc);
     await db.putDoc(doc);
     db.persist();
+    tset('salvataggio totale', tSave);
     pr.done();
     currentDoc = doc;
     const edit = !!session.editPageId; const base = session.baseDepth;
@@ -883,7 +1037,7 @@ $('#pg-edit').onclick = async () => {
   const p = await currentPage();
   beginSession(currentDoc.id, p.id);
   const it = newItem(p.raw, p.rw, p.rh);
-  Object.assign(it, { corners: p.corners.map(c => c.slice()), rotation: p.rotation, filter: p.filter, adj: { ...p.adj } });
+  Object.assign(it, { rawRot: p.rawRot || 0, corners: p.corners.map(c => c.slice()), rotation: p.rotation, filter: p.filter, adj: { ...p.adj } });
   session.items.push(it);
   go('filter');
 };
@@ -1286,6 +1440,7 @@ async function openSettings() {
     <div class="field"><span>Lingua OCR</span><div class="opts">${o('ocrLang', 'ita', 'Italiano')}${o('ocrLang', 'ita+eng', 'Italiano + Inglese')}${o('ocrLang', 'eng', 'Inglese')}</div></div>
     <div class="field"><span>Firme salvate: ${(settings.signatures || []).length}</span><div class="opts"><button id="st-sigdel">Elimina tutte le firme</button></div></div>
     ${installEvt && !isNative ? '<div class="row"><button class="btn primary" id="st-install">Installa MyScanner sulla schermata Home</button></div>' : ''}
+    ${Object.keys(timings).length ? `<div class="field"><span>Tempi dell'ultima scansione</span><p class="muted" style="margin:0">${Object.entries(timings).map(([k, v]) => `${k}: ${(v / 1000).toFixed(1)} s`).join('<br>')}${camInfo ? `<br>risoluzione fotocamera: ${camInfo}` : ''}</p></div>` : ''}
     <p class="muted" style="margin-top:16px">Documenti, firme e testi restano solo su questo telefono (nessun server). ${used}<br>MyScanner 1.0 · Bulli e Pupe S.r.l. · <a href="https://bulliepupe.github.io/myscanner/privacy.html" target="_blank" rel="noopener">Informativa privacy</a></p>`, s => {
     s.querySelectorAll('.opts button[data-k]').forEach(b => b.onclick = async () => {
       const k = b.dataset.k; let v = b.dataset.v; if (k === 'autoShot') v = v === 'true';

@@ -55,6 +55,7 @@
     <button class="cam-queue" id="cam-done" aria-label="Fatto"><img id="cam-thumb" alt=""><b id="cam-count">0</b></button>
   </div>
   <div class="flash-fx" id="flash-fx"></div>
+  <div class="cam-busy hidden" id="cam-busy"><canvas id="cam-freeze"></canvas><div><i class="spinner"></i><span>Elaboro la foto…</span></div></div>
 </section>
 
 <!-- RITAGLIO -->
@@ -86,7 +87,7 @@
     <div class="title" id="filter-title">Migliora</div>
     <button class="text-btn accent" id="filter-save">Salva</button>
   </header>
-  <div class="filter-stage"><img id="filter-img" alt=""><div class="busy hidden" id="filter-busy"><i></i></div></div>
+  <div class="filter-stage"><canvas id="filter-img"></canvas><div class="busy hidden" id="filter-busy"><i></i></div></div>
   <div class="pager" id="filter-pager"><button id="fp-prev">‹</button><span id="fp-label">1/1</span><button id="fp-next">›</button></div>
   <div class="sliders hidden" id="sliders">
     <label>Luminosità <input type="range" id="adj-b" min="-60" max="60" value="0"></label>

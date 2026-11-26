@@ -4,11 +4,23 @@ import { warpPerspective, rotate90, applyFilter, adjust } from './imgproc.js';
 
 const wrap = img => ({ data: new Uint8ClampedArray(img.data.buffer || img.data), width: img.width, height: img.height });
 
+// anteprime tenute in memoria nel worker: i filtri non devono ricevere ogni volta l'immagine
+const cache = new Map();
+
 self.onmessage = e => {
   const { id, op, img, opts = {} } = e.data;
   try {
-    let src = wrap(img), out, result;
-    if (op === 'detect') {
+    let src = img ? wrap(img) : null, out, result;
+    if (op === 'cacheImg') {
+      cache.set(opts.key, { img: src, ctx: {} });
+      while (cache.size > 4) cache.delete(cache.keys().next().value);
+      result = true;
+    } else if (op === 'filterKey') {
+      const entry = cache.get(opts.key);
+      if (!entry) throw new Error('anteprima non in memoria');
+      const copy = { data: new Uint8ClampedArray(entry.img.data), width: entry.img.width, height: entry.img.height };
+      out = adjust(applyFilter(copy, opts.filter, entry.ctx), opts.adj);
+    } else if (op === 'detect') {
       const r = detectQuad(src);
       result = r ? r.corners : null;
     } else if (op === 'fuse') {

@@ -282,18 +282,26 @@ export function warpPerspective(img, corners, maxSide = 2400) {
   const H = homography(dst, corners); // da destinazione a sorgente
   const out = makeImage(W, Hh);
   const { data: s, width: sw, height: sh } = img, o = out.data;
+  const [h0, h1, h2, h3, h4, h5, h6, h7, h8] = H;
+  const maxX = sw - 1.001, maxY = sh - 1.001, row = sw * 4;
+  let q = 0;
   for (let y = 0; y < Hh; y++) {
+    const py = y + 0.5;
+    // i termini che dipendono solo dalla riga si calcolano una volta
+    let nx = h0 * 0.5 + h1 * py + h2, ny = h3 * 0.5 + h4 * py + h5, dd = h6 * 0.5 + h7 * py + h8;
     for (let x = 0; x < W; x++) {
-      const [fx, fy] = applyH(H, x + 0.5, y + 0.5);
-      let sx = fx - 0.5, sy = fy - 0.5;
-      sx = clamp(sx, 0, sw - 1.001); sy = clamp(sy, 0, sh - 1.001);
+      let sx = nx / dd - 0.5, sy = ny / dd - 0.5;
+      nx += h0; ny += h3; dd += h6;
+      if (sx < 0) sx = 0; else if (sx > maxX) sx = maxX;
+      if (sy < 0) sy = 0; else if (sy > maxY) sy = maxY;
       const x0 = sx | 0, y0 = sy | 0, ax = sx - x0, ay = sy - y0;
-      const p00 = (y0 * sw + x0) * 4, p10 = p00 + 4, p01 = p00 + sw * 4, p11 = p01 + 4;
-      const q = (y * W + x) * 4;
-      for (let c = 0; c < 3; c++) {
-        o[q + c] = (s[p00 + c] * (1 - ax) + s[p10 + c] * ax) * (1 - ay) + (s[p01 + c] * (1 - ax) + s[p11 + c] * ax) * ay;
-      }
+      const p00 = (y0 * sw + x0) * 4, p01 = p00 + row;
+      const w00 = (1 - ax) * (1 - ay), w10 = ax * (1 - ay), w01 = (1 - ax) * ay, w11 = ax * ay;
+      o[q] = s[p00] * w00 + s[p00 + 4] * w10 + s[p01] * w01 + s[p01 + 4] * w11;
+      o[q + 1] = s[p00 + 1] * w00 + s[p00 + 5] * w10 + s[p01 + 1] * w01 + s[p01 + 5] * w11;
+      o[q + 2] = s[p00 + 2] * w00 + s[p00 + 6] * w10 + s[p01 + 2] * w01 + s[p01 + 6] * w11;
       o[q + 3] = 255;
+      q += 4;
     }
   }
   return out;
@@ -388,10 +396,12 @@ function saturate(img, k) {
 }
 
 // Divisione per lo sfondo: carta bianca uniforme, ombre attenuate
-function flatten(img, keepColor) {
+// ctx (facoltativo) conserva grigi e mappa dello sfondo: si calcolano una volta e valgono per tutti i filtri
+function flatten(img, keepColor, ctx) {
   const { width: w, height: h, data } = img;
-  const gray = toGray(img);
-  const bg = backgroundMap(gray, w, h);
+  const gray = (ctx && ctx.gray) || toGray(img);
+  const bg = (ctx && ctx.bg) || backgroundMap(gray, w, h);
+  if (ctx) { ctx.gray = gray; ctx.bg = bg; }
   const out = makeImage(w, h), o = out.data;
   for (let i = 0, p = 0; i < gray.length; i++, p += 4) {
     const k = 255 / Math.max(30, bg[i]);
@@ -441,22 +451,23 @@ export const FILTERS = [
   { id: 'nosh', label: 'Senza ombre' },
 ];
 
-export function applyFilter(img, id) {
+export function applyFilter(img, id, ctx) {
   switch (id) {
     case 'auto': return saturate(autoLevels(img), 1.15);
-    case 'magic': return saturate(curve(flatten(img, true), 25, 235, 1.1), 1.35);
-    case 'document': return curve(flatten(img, false), 60, 225, 1.25);
+    case 'magic': return saturate(curve(flatten(img, true, ctx), 25, 235, 1.1), 1.35);
+    case 'document': return curve(flatten(img, false, ctx), 60, 225, 1.25);
     case 'gray': {
-      const g = toGray(img), out = makeImage(img.width, img.height), o = out.data;
+      const g = (ctx && ctx.gray) || toGray(img), out = makeImage(img.width, img.height), o = out.data;
+      if (ctx) ctx.gray = g;
       for (let i = 0, p = 0; i < g.length; i++, p += 4) { o[p] = o[p + 1] = o[p + 2] = g[i]; o[p + 3] = 255; }
       return autoLevels(out);
     }
-    case 'bw': return adaptiveThreshold(flatten(img, false), 0.12, 0.02);
+    case 'bw': return adaptiveThreshold(flatten(img, false, ctx), 0.12, 0.02);
     case 'eco': {
       // B/N con tratti sottili e sfondo pulito: meno inchiostro in stampa
-      return adaptiveThreshold(flatten(img, false), 0.22, 0.015);
+      return adaptiveThreshold(flatten(img, false, ctx), 0.22, 0.015);
     }
-    case 'nosh': return curve(flatten(img, true), 5, 245, 1);
+    case 'nosh': return curve(flatten(img, true, ctx), 5, 245, 1);
     default: return img;
   }
 }
